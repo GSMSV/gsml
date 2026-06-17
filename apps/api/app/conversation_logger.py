@@ -19,6 +19,31 @@ def _log_path(dt: datetime) -> Path:
     return log_dir / f"{dt.strftime('%Y-%m-%d')}.jsonl"
 
 
+def _raw_log_path(dt: datetime) -> Path:
+    log_dir = Path(settings.CONVERSATION_LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"raw-{dt.strftime('%Y-%m-%d')}.jsonl"
+
+
+def write_upstream_raw_log(entry: dict) -> None:
+    """업스트림(llama-server/ollama) 원본 요청·응답을 raw-YYYY-MM-DD.jsonl로 기록한다.
+
+    서비스 로직의 OpenAI 포맷 변환 이전 raw 데이터를 그대로 남긴다.
+    네이티브 prompt(도구 정의가 프롬프트에 들어갔는지)와 모델 원문 출력
+    (`<tool_call>` 등 변환 과정에서 가려지는 출력)을 확인하는 용도다.
+    한 줄이 한 번의 업스트림 호출에 해당한다.
+    """
+    if not settings.RAW_UPSTREAM_LOG:
+        return
+    now = datetime.now(timezone.utc)
+    record = {"timestamp": now.isoformat(), **entry}
+    try:
+        with _raw_log_path(now).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        logger.exception("업스트림 raw 로그 저장 실패")
+
+
 def write_conversation_log(
     *,
     request_id: str,

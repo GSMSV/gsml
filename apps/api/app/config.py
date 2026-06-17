@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     REQUEST_LOG_RETENTION_DAYS: int = 30
 
     CONVERSATION_LOG_DIR: str = "/app/logs/conversations"
+    # 업스트림(llama-server/ollama) 원본 요청·응답을 raw-YYYY-MM-DD.jsonl로 기록할지 여부.
+    RAW_UPSTREAM_LOG: bool = True
 
     DATABASE_URL: str = "sqlite:///./data/gsml.db"
 
