@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..concurrency import acquire_slot, release, try_acquire
 from ..config import settings
+from ..conversation_logger import write_conversation_log
 from ..db import get_db
 from ..deps import get_api_user, get_user_any
 from ..errors import insufficient_quota, service_unavailable, upstream_error
@@ -136,7 +137,7 @@ async def chat_completions(
     if not is_stream:
         async with acquire_slot(user.id, user.max_concurrent):
             try:
-                return await _do_native_non_stream(db, user, body, headers, route)
+                return await _do_native_non_stream(db, user, body, headers, route, messages, conv_id)
             finally:
                 get_balancer().release(conv_id)
 
@@ -160,6 +161,8 @@ async def _do_native_non_stream(
     body: dict,
     headers: dict,
     route: RouteEntry,
+    messages: list | None = None,
+    conv_id: str = "",
     source: str = "api",
 ) -> JSONResponse:
     started = time.perf_counter()
@@ -171,6 +174,21 @@ async def _do_native_non_stream(
     resp = native_to_openai_response(native, model)
     u = resp["usage"]
     _log_and_charge(db, user, model, u["prompt_tokens"], u["completion_tokens"], 200, latency_ms, None, source)
+    write_conversation_log(
+        request_id=resp["id"],
+        user_id=user.id,
+        user_email=user.email,
+        user_name=user.name,
+        model=model,
+        conv_id=conv_id,
+        messages=messages or body.get("messages", []),
+        response_text=resp["choices"][0]["message"]["content"],
+        prompt_tokens=u["prompt_tokens"],
+        completion_tokens=u["completion_tokens"],
+        latency_ms=latency_ms,
+        ttft_ms=None,
+        stream=False,
+    )
     out = {**headers, "X-RateLimit-Remaining-Tokens": str(max(0, user.usage_limit - user.current_usage))}
     return JSONResponse(status_code=200, content=resp, headers=out)
 
@@ -189,6 +207,7 @@ async def _do_native_stream(
     model = body.get("model", "")
     cid = f"chatcmpl-{uuid.uuid4().hex}"
     state = {"ttft_ms": None, "prompt_tokens": 0, "completion_tokens": 0}
+    response_parts: list[str] = []
 
     async def gen():
         try:
@@ -204,6 +223,8 @@ async def _do_native_stream(
                     state["completion_tokens"] = int(
                         chunk.get("tokens_predicted") or chunk.get("predicted_n") or 0
                     )
+                else:
+                    response_parts.append(chunk.get("content", ""))
                 yield native_chunk_to_sse(chunk, cid, model).encode("utf-8")
         except (asyncio.CancelledError, httpx.HTTPError):
             pass
@@ -211,6 +232,7 @@ async def _do_native_stream(
             try:
                 pt = state["prompt_tokens"] or count_messages(messages)
                 ct = state["completion_tokens"]
+                total_latency_ms = int((time.perf_counter() - started) * 1000)
                 _log_and_charge(
                     db,
                     user,
@@ -218,9 +240,24 @@ async def _do_native_stream(
                     pt,
                     ct,
                     200,
-                    int((time.perf_counter() - started) * 1000),
+                    total_latency_ms,
                     state["ttft_ms"],
                     source,
+                )
+                write_conversation_log(
+                    request_id=cid,
+                    user_id=user.id,
+                    user_email=user.email,
+                    user_name=user.name,
+                    model=model,
+                    conv_id=conv_id,
+                    messages=messages,
+                    response_text="".join(response_parts),
+                    prompt_tokens=pt,
+                    completion_tokens=ct,
+                    latency_ms=total_latency_ms,
+                    ttft_ms=state["ttft_ms"],
+                    stream=True,
                 )
             finally:
                 get_balancer().release(conv_id)

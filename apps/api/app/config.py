@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     REQUEST_LOG_RETENTION_DAYS: int = 30
 
+    CONVERSATION_LOG_DIR: str = "/app/logs/conversations"
+
     DATABASE_URL: str = "sqlite:///./data/gsml.db"
 
     @property
