@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
+The project name is "gsml".
+
 OpenAI-compatible LLM proxy with a React dashboard. Monorepo with two apps:
 - `apps/api/` — FastAPI backend (Python 3.12+)
 - `apps/web/` — React + TypeScript frontend (Vite)
