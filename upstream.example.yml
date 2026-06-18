@@ -1,6 +1,12 @@
 # llama-server 멀티인스턴스 로드밸런서 설정
 # slot_count는 llama-server --parallel 값과 일치시킬 것.
 # url 트레일링 슬래시 없음.
+#
+# [도구 호출 필수 요건] 프록시는 OpenAI tools/tool_choice를 업스트림
+# /v1/chat/completions로 그대로 전달한다. 각 llama-server 인스턴스를
+#   --jinja  +  도구 지원 템플릿(Qwen/Hermes, <tool_call>)
+# 으로 띄워야 도구 호출이 동작한다. 누락 시 평문으로 조용히 격하된다.
+# 슬롯 고정(id_slot)을 지원하지 않는 빌드면 프록시에 UPSTREAM_SLOT_PINNING=false.
 
 health_check:
   interval_seconds: 30   # 헬스체크 주기 (기본 30)

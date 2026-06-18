@@ -3,7 +3,8 @@
 지원: GET /v1/models, POST /v1/chat/completions (stream + non-stream).
 
 conv_id 기반 스티키 라우팅은 Balancer가 담당한다.
-모든 추론 요청은 llama-server 네이티브 /completion 경로로 전달된다.
+모든 추론 요청은 업스트림 /v1/chat/completions로 얇게 패스스루된다
+(tools / tool_choice / response_format 무변형 통과).
 """
 import asyncio
 import time
@@ -24,13 +25,8 @@ from ..models import RequestLog, User
 from ..upstream import get_balancer
 from ..upstream.balancer import RouteEntry
 from ..upstream.client import make_client
-from ..upstream.llama_native import (
-    call_native_non_stream,
-    call_native_stream,
-    native_chunk_to_sse,
-    native_to_openai_response,
-)
-from ..upstream.token_count import count_messages, count_text
+from ..upstream.openai_passthrough import call_chat_non_stream, call_chat_stream
+from ..upstream.token_count import count_messages
 
 router = APIRouter(prefix="/v1", tags=["openai"])
 
@@ -116,14 +112,11 @@ async def chat_completions(
     if user.current_usage >= user.usage_limit:
         raise insufficient_quota()
 
-    # 서버 제어 필드 정리 + 스트리밍 usage 강제
+    # 서버 제어 필드 정리 (id_slot / cache_prompt / n / stream_options 주입은
+    # openai_passthrough.prepare_upstream_body가 담당)
     for k in _SERVER_CONTROLLED:
         body.pop(k, None)
     body["user"] = user.id
-    if is_stream:
-        opts = body.get("stream_options") or {}
-        opts["include_usage"] = True
-        body["stream_options"] = opts
 
     conv_id = _conv_id(user.id, x_conversation_id)
     headers = _quota_headers(user)
@@ -137,13 +130,13 @@ async def chat_completions(
     if not is_stream:
         async with acquire_slot(user.id, user.max_concurrent):
             try:
-                return await _do_native_non_stream(db, user, body, headers, route, messages, conv_id)
+                return await _do_passthrough_non_stream(db, user, body, headers, route, messages, conv_id)
             finally:
                 get_balancer().release(conv_id)
 
     try_acquire(user.id, user.max_concurrent)
     try:
-        return await _do_native_stream(db, user, body, messages, headers, route, conv_id)
+        return await _do_passthrough_stream(db, user, body, messages, headers, route, conv_id)
     except BaseException:
         release(user.id)
         get_balancer().release(conv_id)
@@ -151,11 +144,11 @@ async def chat_completions(
 
 
 # ---------------------------------------------------------------------------
-# 네이티브 /completion 경로 헬퍼
+# /v1/chat/completions 패스스루 헬퍼
 # ---------------------------------------------------------------------------
 
 
-async def _do_native_non_stream(
+async def _do_passthrough_non_stream(
     db: Session,
     user: User,
     body: dict,
@@ -167,24 +160,29 @@ async def _do_native_non_stream(
 ) -> JSONResponse:
     started = time.perf_counter()
     model = body.get("model", "")
-    native = await call_native_non_stream(
+    msgs = messages or body.get("messages", [])
+    resp = await call_chat_non_stream(
         body, route.slot_id, route.node.url, settings.UPSTREAM_TIMEOUT
     )
     latency_ms = int((time.perf_counter() - started) * 1000)
-    resp = native_to_openai_response(native, model)
-    u = resp["usage"]
-    _log_and_charge(db, user, model, u["prompt_tokens"], u["completion_tokens"], 200, latency_ms, None, source)
+    usage = resp.get("usage") or {}
+    pt = int(usage.get("prompt_tokens") or 0) or count_messages(msgs)
+    ct = int(usage.get("completion_tokens") or 0)
+    choice = (resp.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    _log_and_charge(db, user, model, pt, ct, 200, latency_ms, None, source)
     write_conversation_log(
-        request_id=resp["id"],
+        request_id=resp.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
         user_id=user.id,
         user_email=user.email,
         user_name=user.name,
         model=model,
         conv_id=conv_id,
-        messages=messages or body.get("messages", []),
-        response_text=resp["choices"][0]["message"]["content"],
-        prompt_tokens=u["prompt_tokens"],
-        completion_tokens=u["completion_tokens"],
+        messages=msgs,
+        response_text=msg.get("content") or "",
+        tool_calls=msg.get("tool_calls"),
+        prompt_tokens=pt,
+        completion_tokens=ct,
         latency_ms=latency_ms,
         ttft_ms=None,
         stream=False,
@@ -193,7 +191,7 @@ async def _do_native_non_stream(
     return JSONResponse(status_code=200, content=resp, headers=out)
 
 
-async def _do_native_stream(
+async def _do_passthrough_stream(
     db: Session,
     user: User,
     body: dict,
@@ -205,33 +203,24 @@ async def _do_native_stream(
 ) -> StreamingResponse:
     started = time.perf_counter()
     model = body.get("model", "")
-    cid = f"chatcmpl-{uuid.uuid4().hex}"
-    state = {"ttft_ms": None, "prompt_tokens": 0, "completion_tokens": 0}
-    response_parts: list[str] = []
+    state = {"ttft_ms": None}
+    tap: dict = {}
 
     async def gen():
         try:
-            async for chunk in call_native_stream(
-                body, route.slot_id, route.node.url, settings.UPSTREAM_TIMEOUT
+            async for sse in call_chat_stream(
+                body, route.slot_id, route.node.url, tap, settings.UPSTREAM_TIMEOUT
             ):
                 if state["ttft_ms"] is None:
                     state["ttft_ms"] = int((time.perf_counter() - started) * 1000)
-                if chunk.get("stop"):
-                    state["prompt_tokens"] = int(
-                        chunk.get("tokens_evaluated") or chunk.get("prompt_tokens") or 0
-                    )
-                    state["completion_tokens"] = int(
-                        chunk.get("tokens_predicted") or chunk.get("predicted_n") or 0
-                    )
-                else:
-                    response_parts.append(chunk.get("content", ""))
-                yield native_chunk_to_sse(chunk, cid, model).encode("utf-8")
+                yield sse.encode("utf-8")
         except (asyncio.CancelledError, httpx.HTTPError):
             pass
         finally:
             try:
-                pt = state["prompt_tokens"] or count_messages(messages)
-                ct = state["completion_tokens"]
+                usage = tap.get("usage") or {}
+                pt = int(usage.get("prompt_tokens") or 0) or count_messages(messages)
+                ct = int(usage.get("completion_tokens") or 0)
                 total_latency_ms = int((time.perf_counter() - started) * 1000)
                 _log_and_charge(
                     db,
@@ -245,14 +234,15 @@ async def _do_native_stream(
                     source,
                 )
                 write_conversation_log(
-                    request_id=cid,
+                    request_id=tap.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
                     user_id=user.id,
                     user_email=user.email,
                     user_name=user.name,
                     model=model,
                     conv_id=conv_id,
                     messages=messages,
-                    response_text="".join(response_parts),
+                    response_text=tap.get("content", ""),
+                    tool_calls=tap.get("tool_calls"),
                     prompt_tokens=pt,
                     completion_tokens=ct,
                     latency_ms=total_latency_ms,

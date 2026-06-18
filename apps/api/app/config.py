@@ -18,7 +18,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173"
 
     UPSTREAM_TIMEOUT: int = 600
-    LLAMA_CHAT_TEMPLATE: str = "chatml"
+    # 업스트림 /v1/chat/completions에 id_slot을 주입해 슬롯을 고정할지 여부.
+    # llama-server 빌드가 OAI 엔드포인트의 id_slot 패스스루를 지원할 때만 의미가 있다
+    # (미지원 빌드면 False로 두고 cache_prompt prefix-match에 맡긴다).
+    UPSTREAM_SLOT_PINNING: bool = True
 
     OAUTH_CLIENT_ID: str = ""
     OAUTH_CLIENT_SECRET: str = ""

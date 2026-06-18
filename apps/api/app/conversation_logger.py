@@ -59,6 +59,7 @@ def write_conversation_log(
     latency_ms: int,
     ttft_ms: int | None,
     stream: bool,
+    tool_calls: list[dict] | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
     entry = {
@@ -72,6 +73,7 @@ def write_conversation_log(
         "stream": stream,
         "messages": messages,
         "response": response_text,
+        "tool_calls": tool_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "latency_ms": latency_ms,
