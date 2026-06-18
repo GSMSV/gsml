@@ -3,6 +3,8 @@ upstream.yml
 data/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
 .venv/
 node_modules/
 dist/
