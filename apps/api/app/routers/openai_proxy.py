@@ -2,10 +2,12 @@
 
 지원: GET /v1/models, POST /v1/chat/completions (stream + non-stream).
 
-conv_id 기반 스티키 라우팅은 Balancer가 담당한다.
-모든 추론 요청은 llama-server 네이티브 /completion 경로로 전달된다.
+conv_id 기반 스티키 라우팅은 Balancer가 담당하고, 추론 요청은 업스트림의
+OpenAI 호환 엔드포인트로 그대로 전달된다. 프롬프트 템플릿 적용과 reasoning /
+tool call 파싱은 llama-server가 하므로 프록시는 응답 본문을 변형하지 않는다.
 """
 import asyncio
+import logging
 import time
 import uuid
 
@@ -24,18 +26,24 @@ from ..models import RequestLog, User
 from ..upstream import get_balancer
 from ..upstream.balancer import RouteEntry
 from ..upstream.client import make_client
-from ..upstream.llama_native import (
-    call_native_non_stream,
-    call_native_stream,
-    native_chunk_to_sse,
-    native_to_openai_response,
+from ..upstream.llama_chat import (
+    call_chat_non_stream,
+    call_chat_stream,
+    merge_tool_call_deltas,
 )
-from ..upstream.token_count import count_messages, count_text
+from ..upstream.token_count import count_messages
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["openai"])
 
 # 클라이언트가 보낼 수 없는 서버 제어 필드 (덮어쓰거나 strip).
-_SERVER_CONTROLLED = {"user"}
+# id_slot/cache_prompt는 Balancer가 정하는 값이다. 클라이언트가 직접 슬롯을
+# 지정하면 다른 사용자의 대화가 붙어 있는 슬롯을 밀어낼 수 있으므로 반드시 버린다.
+# slot_id는 구버전 llama.cpp의 이름 — 지금은 무시되지만 같이 막아둔다.
+# 이 넷 외에는 body를 그대로 넘긴다. llama.cpp가 모르는 필드는 조용히 버리고,
+# grammar/samplers/mirostat*/dry_*/xtc_* 같은 확장 파라미터는 의도적으로 열어둔다.
+_SERVER_CONTROLLED = {"user", "id_slot", "cache_prompt", "slot_id"}
 
 
 def _conv_id(user_id: str, x_conversation_id: str | None) -> str:
@@ -137,13 +145,13 @@ async def chat_completions(
     if not is_stream:
         async with acquire_slot(user.id, user.max_concurrent):
             try:
-                return await _do_native_non_stream(db, user, body, headers, route, messages, conv_id)
+                return await _do_chat_non_stream(db, user, body, headers, route, messages, conv_id)
             finally:
                 get_balancer().release(conv_id)
 
     try_acquire(user.id, user.max_concurrent)
     try:
-        return await _do_native_stream(db, user, body, messages, headers, route, conv_id)
+        return await _do_chat_stream(db, user, body, messages, headers, route, conv_id)
     except BaseException:
         release(user.id)
         get_balancer().release(conv_id)
@@ -151,11 +159,11 @@ async def chat_completions(
 
 
 # ---------------------------------------------------------------------------
-# 네이티브 /completion 경로 헬퍼
+# 업스트림 /v1/chat/completions 경로 헬퍼
 # ---------------------------------------------------------------------------
 
 
-async def _do_native_non_stream(
+async def _do_chat_non_stream(
     db: Session,
     user: User,
     body: dict,
@@ -167,24 +175,35 @@ async def _do_native_non_stream(
 ) -> JSONResponse:
     started = time.perf_counter()
     model = body.get("model", "")
-    native = await call_native_non_stream(
-        body, route.slot_id, route.node.url, settings.UPSTREAM_TIMEOUT
+    status, resp = await call_chat_non_stream(
+        body, route.slot_id, route.node, settings.UPSTREAM_TIMEOUT
     )
     latency_ms = int((time.perf_counter() - started) * 1000)
-    resp = native_to_openai_response(native, model)
-    u = resp["usage"]
-    _log_and_charge(db, user, model, u["prompt_tokens"], u["completion_tokens"], 200, latency_ms, None, source)
+
+    # 업스트림 에러 본문은 이미 OpenAI 포맷이므로 그대로 전달한다. 토큰은 청구하지 않는다.
+    if status != 200:
+        logger.warning("Upstream chat completion failed on %s: %d", route.node.url, status)
+        return JSONResponse(status_code=status, content=resp, headers=headers)
+
+    u = resp.get("usage") or {}
+    pt = int(u.get("prompt_tokens") or 0) or count_messages(messages or body.get("messages", []))
+    ct = int(u.get("completion_tokens") or 0)
+    _log_and_charge(db, user, model, pt, ct, 200, latency_ms, None, source)
+
+    msg = (resp.get("choices") or [{}])[0].get("message") or {}
     write_conversation_log(
-        request_id=resp["id"],
+        request_id=resp.get("id") or f"chatcmpl-{uuid.uuid4().hex}",
         user_id=user.id,
         user_email=user.email,
         user_name=user.name,
         model=model,
         conv_id=conv_id,
         messages=messages or body.get("messages", []),
-        response_text=resp["choices"][0]["message"]["content"],
-        prompt_tokens=u["prompt_tokens"],
-        completion_tokens=u["completion_tokens"],
+        response_text=msg.get("content") or "",
+        reasoning_text=msg.get("reasoning_content"),
+        tool_calls=msg.get("tool_calls"),
+        prompt_tokens=pt,
+        completion_tokens=ct,
         latency_ms=latency_ms,
         ttft_ms=None,
         stream=False,
@@ -193,7 +212,7 @@ async def _do_native_non_stream(
     return JSONResponse(status_code=200, content=resp, headers=out)
 
 
-async def _do_native_stream(
+async def _do_chat_stream(
     db: Session,
     user: User,
     body: dict,
@@ -205,27 +224,35 @@ async def _do_native_stream(
 ) -> StreamingResponse:
     started = time.perf_counter()
     model = body.get("model", "")
-    cid = f"chatcmpl-{uuid.uuid4().hex}"
-    state = {"ttft_ms": None, "prompt_tokens": 0, "completion_tokens": 0}
+    fallback_cid = f"chatcmpl-{uuid.uuid4().hex}"
+    state = {"ttft_ms": None, "prompt_tokens": 0, "completion_tokens": 0, "request_id": ""}
     response_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_call_acc: dict[int, dict] = {}
 
     async def gen():
         try:
-            async for chunk in call_native_stream(
-                body, route.slot_id, route.node.url, settings.UPSTREAM_TIMEOUT
+            async for line, chunk in call_chat_stream(
+                body, route.slot_id, route.node, settings.UPSTREAM_TIMEOUT
             ):
-                if state["ttft_ms"] is None:
-                    state["ttft_ms"] = int((time.perf_counter() - started) * 1000)
-                if chunk.get("stop"):
-                    state["prompt_tokens"] = int(
-                        chunk.get("tokens_evaluated") or chunk.get("prompt_tokens") or 0
-                    )
-                    state["completion_tokens"] = int(
-                        chunk.get("tokens_predicted") or chunk.get("predicted_n") or 0
-                    )
-                else:
-                    response_parts.append(chunk.get("content", ""))
-                yield native_chunk_to_sse(chunk, cid, model).encode("utf-8")
+                # 청크는 회계·로깅용으로만 읽고, 클라이언트에는 원본 라인을 그대로 흘린다.
+                if chunk is not None:
+                    if state["ttft_ms"] is None:
+                        state["ttft_ms"] = int((time.perf_counter() - started) * 1000)
+                    if not state["request_id"]:
+                        state["request_id"] = chunk.get("id") or ""
+                    if usage := chunk.get("usage"):
+                        state["prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+                        state["completion_tokens"] = int(usage.get("completion_tokens") or 0)
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if content := delta.get("content"):
+                            response_parts.append(content)
+                        if reasoning := delta.get("reasoning_content"):
+                            reasoning_parts.append(reasoning)
+                        if deltas := delta.get("tool_calls"):
+                            merge_tool_call_deltas(tool_call_acc, deltas)
+                yield f"{line}\n\n".encode("utf-8")
         except (asyncio.CancelledError, httpx.HTTPError):
             pass
         finally:
@@ -245,7 +272,7 @@ async def _do_native_stream(
                     source,
                 )
                 write_conversation_log(
-                    request_id=cid,
+                    request_id=state["request_id"] or fallback_cid,
                     user_id=user.id,
                     user_email=user.email,
                     user_name=user.name,
@@ -253,6 +280,8 @@ async def _do_native_stream(
                     conv_id=conv_id,
                     messages=messages,
                     response_text="".join(response_parts),
+                    reasoning_text="".join(reasoning_parts) or None,
+                    tool_calls=[tool_call_acc[i] for i in sorted(tool_call_acc)] or None,
                     prompt_tokens=pt,
                     completion_tokens=ct,
                     latency_ms=total_latency_ms,
