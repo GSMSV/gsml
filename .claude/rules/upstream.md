@@ -10,13 +10,15 @@ Covers `apps/api/app/upstream/*` and `apps/api/app/routers/openai_proxy.py`.
 → `_conv_id(user_id, X-Conversation-ID)`
 → `Balancer.acquire(conv_id)` → `(InstanceNode, slot_id)`
 → per-user concurrency slot
-→ `build_native_request` → llama-server **native `/completion`** (not `/v1/chat/completions`)
-→ response converted back to OpenAI shape
+→ `apply_routing` (adds `id_slot` + `cache_prompt`) → llama-server **`/v1/chat/completions`**
+→ response body forwarded unchanged
 → `_log_and_charge` + `write_conversation_log`
 → release concurrency slot **and** balancer entry.
 
-Everything inference-related goes through the native path; `cache_prompt: true` + a pinned `slot_id` is what
-preserves the KV cache across turns. `GET /v1/models` is the one plain proxy pass-through.
+The upstream's OpenAI-compatible endpoint does the work the proxy used to do by hand: it renders the model's own
+Jinja chat template, parses `<think>` into `reasoning_content` and tool markup into `tool_calls`, and enforces a
+grammar when `tools` is present. The proxy adds routing parameters and reads `usage` for billing; it does not
+rewrite the response. `GET /v1/models` is likewise a plain pass-through.
 
 ## `upstream.yml`
 
@@ -25,7 +27,8 @@ preserves the KV cache across turns. `GET /v1/models` is the one plain proxy pas
 - Resolved by `UPSTREAM_YML` env var, else by walking parents from `app/upstream/__init__.py`. Missing file →
   `RuntimeError` at startup; the app will not boot.
 - `slot_count` **must equal that llama-server's `--parallel`**. Too high and the balancer hands out slot ids the
-  server does not have; too low and capacity is wasted.
+  server does not have (llama.cpp wraps them with `id_slot % n_slots`, silently colliding two convs on one slot);
+  too low and capacity is wasted.
 - `url` must have no trailing slash (the loader strips one defensively).
 - Edits affect live routing. Validate the YAML and confirm the host is reachable before adding an instance —
   a dead entry starts `ALIVE` and takes `fail_threshold` health checks (default 2 × 30s) to be evicted, sending
@@ -59,16 +62,37 @@ preserves the KV cache across turns. `GET /v1/models` is the one plain proxy pas
   `async with acquire_slot(...)` context manager; streaming calls `try_acquire` before returning the
   `StreamingResponse` and releases in the generator, because the response outlives the handler. Do not
   "simplify" the streaming path into the context manager — it would release the slot before the stream ends.
-- `stream_options.include_usage` is forced on for streaming requests.
+- `stream_options.include_usage` is forced on for streaming requests; the usage-bearing chunk is where
+  `_do_chat_stream` reads token counts.
+- SSE lines are forwarded verbatim. The generator parses each `data:` payload only to accumulate `content`,
+  `reasoning_content` and `tool_calls` deltas for the JSONL log and to read `usage` — it never re-emits a
+  rewritten chunk. A non-200 from the upstream becomes one OpenAI-format error event followed by `[DONE]`.
 - Token accounting happens in the generator's `finally`, so a client disconnect still bills.
   `asyncio.CancelledError` and `httpx.HTTPError` are swallowed there deliberately.
-- llama-server field names vary by version: read `tokens_evaluated`/`prompt_tokens` and
-  `tokens_predicted`/`predicted_n` with the existing `or` fallbacks. If usage is missing, fall back to
+- Usage arrives in OpenAI shape (`prompt_tokens` / `completion_tokens`). If it is missing, fall back to
   `token_count.count_messages` (tiktoken `cl100k_base`, approximate for non-OpenAI models).
-- The SSE terminator is a usage-bearing chunk followed by `data: [DONE]`. Keep that contract — OpenAI SDKs rely on it.
-- `messages_to_chatml` hardcodes ChatML and leaves the assistant turn open so the model continues from it.
-  `LLAMA_CHAT_TEMPLATE` exists in settings but is not wired in; a model needing another template requires a real
-  change here, not a config tweak.
+- The SSE terminator is a usage-bearing chunk followed by `data: [DONE]`, produced by the upstream. Keep the
+  pass-through intact — OpenAI SDKs rely on that contract.
+- **`id_slot` is the slot-pinning parameter name**, not `slot_id` — the latter is a pre-2024 llama.cpp name that
+  no longer exists in the source, so sending it is silently ignored and the server picks a slot by prompt-LCP
+  similarity instead (`-sps`, default 0.10). `apply_routing` sends `id_slot` + `cache_prompt` on every request;
+  llama.cpp's oaicompat parser forwards unknown keys to the completion backend, which is why they work on the
+  OpenAI endpoint. Both names are also stripped from client bodies via `_SERVER_CONTROLLED` — a client that
+  could pick its own slot could evict another user's conversation.
+- **The request body is forwarded as-is apart from `_SERVER_CONTROLLED`.** llama.cpp silently ignores fields it
+  does not know (`functions`/`function_call`, `model`, `prediction`, `store`, `metadata`, `service_tier`, ...),
+  so there is nothing to strip for those — note that the deprecated `functions`/`function_call` shape means tool
+  calling fails with no error. Its own sampler extensions (`grammar`, `samplers`, `mirostat*`, `dry_*`, `xtc_*`,
+  `top_k`, `min_p`, `repeat_penalty`, ...) are deliberately left reachable by clients.
+- **Fields that do take effect and are still open**: `n` (aliased to `n_cmpl` — multiplies token cost),
+  `max_tokens`/`max_completion_tokens` (no ceiling), `lora`, `ignore_eos`, `n_keep`, `n_cache_reuse`,
+  `n_discard`. Quota is charged after the fact, so one request can overshoot `usage_limit` by a lot. Left open
+  on purpose; revisit here before assuming a per-request cap exists.
+- **The proxy does not touch the response.** `reasoning_content` and `tool_calls` come from llama-server's own
+  parser, so nothing here needs updating when a new model family ships new markup. Run llama-server with
+  `--jinja`, or `tools` is ignored and the model never sees the tool definitions.
+- `LLAMA_CHAT_TEMPLATE` in settings is unwired and redundant — the template comes from the model. Override it on
+  the llama-server side (`--chat-template` / `--chat-template-file`), not here.
 
 ## Quota and rate limiting
 
@@ -81,4 +105,5 @@ preserves the KV cache across turns. `GET /v1/models` is the one plain proxy pas
 - Usage resets at local midnight (`APP_TIMEZONE`) via APScheduler, with `catch_up_resets()` on boot covering
   downtime. `RequestLog` rows older than `REQUEST_LOG_RETENTION_DAYS` are purged at 00:05 local.
 - Every completed request writes a `RequestLog` row (with `source`: `"api"` or `"web"`) **and** a full-content
-  JSONL line under `CONVERSATION_LOG_DIR`. The JSONL retention job does not exist — only `RequestLog` is purged.
+  JSONL line under `CONVERSATION_LOG_DIR` (with `reasoning` and `tool_calls` keys when the upstream returned
+  them). The JSONL retention job does not exist — only `RequestLog` is purged.
