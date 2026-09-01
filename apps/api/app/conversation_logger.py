@@ -34,6 +34,8 @@ def write_conversation_log(
     latency_ms: int,
     ttft_ms: int | None,
     stream: bool,
+    reasoning_text: str | None = None,
+    tool_calls: list[dict] | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
     entry = {
@@ -52,6 +54,11 @@ def write_conversation_log(
         "latency_ms": latency_ms,
         "ttft_ms": ttft_ms,
     }
+    # 업스트림이 분리해 준 경우에만 기록한다 (없는 모델에서 빈 키가 생기지 않도록).
+    if reasoning_text:
+        entry["reasoning"] = reasoning_text
+    if tool_calls:
+        entry["tool_calls"] = tool_calls
     try:
         with _log_path(now).open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
