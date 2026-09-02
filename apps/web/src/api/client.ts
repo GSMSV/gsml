@@ -31,8 +31,10 @@ export type Me = {
   id: string;
   email: string;
   name: string;
+  // 단위는 크레딧(토큰 아님)
   usage_limit: number;
   current_usage: number;
+  percent_used: number;
   max_concurrent: number;
 };
 
@@ -48,5 +50,15 @@ export type IssuedKey = {
   expires_at: string;
 };
 
-export type UsageToday = { used: number; limit: number; reset_at: string };
-export type UsageHistoryItem = { date: string; total_tokens: number; request_count: number };
+export type UsageToday = {
+  used: number;
+  limit: number;
+  percent_used: number;
+  reset_at: string;
+};
+export type UsageHistoryItem = {
+  date: string;
+  credits: number;
+  total_tokens: number;
+  request_count: number;
+};
