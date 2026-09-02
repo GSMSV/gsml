@@ -69,8 +69,10 @@ rewrite the response. `GET /v1/models` is likewise a plain pass-through.
   rewritten chunk. A non-200 from the upstream becomes one OpenAI-format error event followed by `[DONE]`.
 - Token accounting happens in the generator's `finally`, so a client disconnect still bills.
   `asyncio.CancelledError` and `httpx.HTTPError` are swallowed there deliberately.
-- Usage arrives in OpenAI shape (`prompt_tokens` / `completion_tokens`). If it is missing, fall back to
-  `token_count.count_messages` (tiktoken `cl100k_base`, approximate for non-OpenAI models).
+- Usage arrives in OpenAI shape (`prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`).
+  If it is missing, fall back to `token_count.count_messages` (tiktoken `cl100k_base`, approximate for
+  non-OpenAI models) with `cached_tokens = 0` — that fallback therefore bills the whole prompt at the fresh
+  input rate.
 - The SSE terminator is a usage-bearing chunk followed by `data: [DONE]`, produced by the upstream. Keep the
   pass-through intact — OpenAI SDKs rely on that contract.
 - **`id_slot` is the slot-pinning parameter name**, not `slot_id` — the latter is a pre-2024 llama.cpp name that
@@ -96,14 +98,38 @@ rewrite the response. `GET /v1/models` is likewise a plain pass-through.
 
 ## Quota and rate limiting
 
-- **Quota is checked before the request and charged after it.** A single request can overshoot `usage_limit`;
-  that is accepted. The pre-flight check is `current_usage >= usage_limit` → `insufficient_quota()` (429).
+- **The unit is credits (float), not tokens.** `users.usage_limit` / `users.current_usage` are credits;
+  `DEFAULT_CREDIT_LIMIT` seeds new users. Pricing lives in `Settings` as credits per 1M tokens
+  (`PRICE_INPUT_PER_1M`, `PRICE_CACHED_INPUT_PER_1M`, `PRICE_OUTPUT_PER_1M`) and the arithmetic lives in
+  `app/pricing.py` — nothing else should multiply tokens by a rate.
+- **`cached_tokens` is a subset of `prompt_tokens`, never an addend.** Fresh input is
+  `prompt_tokens - cached_tokens`; adding the two double-charges the cached half. llama-server reports the
+  same number as `timings.cache_n`.
+- **The cache discount is not something a user controls.** `cached_tokens` reflects which slot the request
+  landed on, so a node going `DEAD`, or the forced in-node LRU eviction, makes the next request in the same
+  conversation cost full input price. Don't treat it as a promise to users.
+- An upstream too old to send `prompt_tokens_details` silently yields `cached_tokens = 0`; `pricing.py` logs
+  one warning per process when that happens.
+- **Quota is checked before the request and charged after it**, so the last request of the day runs past the
+  limit. The overshoot is deliberately **not** billed: `_log_and_charge` charges at most the remaining balance
+  and assigns `current_usage = usage_limit` exactly, so the user lands on "fully spent" rather than 137%.
+  `credits_charged` on that row therefore holds what was actually deducted, not the request's raw cost —
+  which keeps `sum(credits_charged) == current_usage` for the day. The raw cost stays derivable from the
+  token columns. Assigning (not adding) also matters: float accumulation could otherwise stop a hair under
+  the limit and let one more request through.
+  The pre-flight check is `current_usage >= usage_limit` → `insufficient_quota()` (429). Because the check is
+  pre-flight only, requests already in flight when the balance runs out still complete and are charged 0.
+  There is still no `max_tokens` ceiling (see above) and `n` still multiplies output — but neither can now
+  cost the operator more than one request's worth of overrun per user per day.
 - Per-user concurrency (`max_concurrent`) is enforced by `app/concurrency.py`, an in-process dict — correct only
   for a single uvicorn worker on a single event loop. Exceeding it → `rate_limited()` (429).
-- `X-RateLimit-Limit-Tokens` / `X-RateLimit-Remaining-Tokens` are set on `/v1` responses and must stay in
-  `expose_headers` in `main.py` for the browser to read them.
+- `X-RateLimit-Limit-Credits` / `X-RateLimit-Remaining-Credits` are set on `/v1` responses. The
+  `*-Tokens` pair is kept as a deprecated alias carrying the same credit values, for clients that already
+  read it. All four must stay in `expose_headers` in `main.py` for the browser to read them.
 - Usage resets at local midnight (`APP_TIMEZONE`) via APScheduler, with `catch_up_resets()` on boot covering
   downtime. `RequestLog` rows older than `REQUEST_LOG_RETENTION_DAYS` are purged at 00:05 local.
-- Every completed request writes a `RequestLog` row (with `source`: `"api"` or `"web"`) **and** a full-content
+- Every completed request writes a `RequestLog` row (with `source`: `"api"` or `"web"`, plus `cached_tokens`
+  and the `credits_charged` fixed at request time — `/api/usage/history` sums that column rather than
+  re-pricing old tokens, so a rate change does not rewrite history) **and** a full-content
   JSONL line under `CONVERSATION_LOG_DIR` (with `reasoning` and `tool_calls` keys when the upstream returned
   them). The JSONL retention job does not exist — only `RequestLog` is purged.

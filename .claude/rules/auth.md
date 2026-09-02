@@ -60,8 +60,8 @@ Rules:
 - **Profile is written on first login only.** Existing users are not updated from `userinfo`, so `usage_limit`
   and `max_concurrent` set by an admin survive re-login. Changing this to an update-on-every-login would silently
   reset operator overrides — don't, unless explicitly asked.
-- New users get `DEFAULT_USAGE_LIMIT` / `DEFAULT_MAX_CONCURRENT` from settings; there is no admin UI, so limits
-  are adjusted with SQL against `data/gsml.db`.
+- New users get `DEFAULT_CREDIT_LIMIT` / `DEFAULT_MAX_CONCURRENT` from settings; there is no admin UI, so limits
+  are adjusted with SQL against `data/gsml.db`. `usage_limit` is **credits**, not tokens.
 
 ## CORS
 
