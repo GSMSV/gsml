@@ -31,8 +31,16 @@ class Settings(BaseSettings):
 
     API_KEY_EXPIRE_DAYS: int = 30
 
-    DEFAULT_USAGE_LIMIT: int = 100_000
+    # 신규 유저의 1일 크레딧 한도. 단위는 크레딧(float).
+    # 기본 단가 기준 1크레딧 = input 200만 토큰 = output 100만 토큰.
+    DEFAULT_CREDIT_LIMIT: float = 1.0
     DEFAULT_MAX_CONCURRENT: int = 2
+
+    # 토큰 100만 개당 크레딧 단가.
+    # cached_input은 업스트림 KV 캐시 히트분이라 기본 무료(0.0)다.
+    PRICE_INPUT_PER_1M: float = 0.5
+    PRICE_CACHED_INPUT_PER_1M: float = 0.0
+    PRICE_OUTPUT_PER_1M: float = 1.0
 
     REQUEST_LOG_RETENTION_DAYS: int = 30
 

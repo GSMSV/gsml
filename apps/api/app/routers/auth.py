@@ -54,7 +54,7 @@ async def oauth_callback(
             oauth_sub=sub,
             email=email,
             name=name,
-            usage_limit=settings.DEFAULT_USAGE_LIMIT,
+            usage_limit=settings.DEFAULT_CREDIT_LIMIT,
             max_concurrent=settings.DEFAULT_MAX_CONCURRENT,
         )
         db.add(user)

@@ -13,7 +13,7 @@ def reset_daily_usage() -> None:
     today = today_local()
     with SessionLocal() as db:
         db.query(User).update(
-            {User.current_usage: 0, User.last_reset_date: today}, synchronize_session=False
+            {User.current_usage: 0.0, User.last_reset_date: today}, synchronize_session=False
         )
         db.commit()
 
@@ -32,7 +32,7 @@ def catch_up_resets() -> None:
     today = today_local()
     with SessionLocal() as db:
         db.query(User).filter(User.last_reset_date < today).update(
-            {User.current_usage: 0, User.last_reset_date: today}, synchronize_session=False
+            {User.current_usage: 0.0, User.last_reset_date: today}, synchronize_session=False
         )
         db.commit()
 

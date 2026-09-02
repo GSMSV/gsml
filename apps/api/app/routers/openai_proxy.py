@@ -23,6 +23,7 @@ from ..db import get_db
 from ..deps import get_api_user, get_user_any
 from ..errors import insufficient_quota, service_unavailable, upstream_error
 from ..models import RequestLog, User
+from ..pricing import cached_tokens_from_usage, charge_credits
 from ..upstream import get_balancer
 from ..upstream.balancer import RouteEntry
 from ..upstream.client import make_client
@@ -57,10 +58,18 @@ def _conv_id(user_id: str, x_conversation_id: str | None) -> str:
 
 
 def _quota_headers(user: User) -> dict[str, str]:
-    remaining = max(0, user.usage_limit - user.current_usage)
+    """남은 크레딧을 헤더로 노출한다.
+
+    -Tokens 쌍은 토큰 과금 시절의 이름이지만 기존 클라이언트가 읽고 있을 수 있어
+    같은 크레딧 값을 미러링한 채로 남겨둔다. 새로 붙는 쪽은 -Credits를 읽을 것.
+    """
+    limit = f"{user.usage_limit:.6f}"
+    remaining = f"{max(0.0, user.usage_limit - user.current_usage):.6f}"
     return {
-        "X-RateLimit-Limit-Tokens": str(user.usage_limit),
-        "X-RateLimit-Remaining-Tokens": str(remaining),
+        "X-RateLimit-Limit-Credits": limit,
+        "X-RateLimit-Remaining-Credits": remaining,
+        "X-RateLimit-Limit-Tokens": limit,  # deprecated alias
+        "X-RateLimit-Remaining-Tokens": remaining,  # deprecated alias
     }
 
 
@@ -69,19 +78,35 @@ def _log_and_charge(
     user: User,
     model: str,
     prompt_tokens: int,
+    cached_tokens: int,
     completion_tokens: int,
     status_code: int,
     latency_ms: int,
     ttft_ms: int | None,
     source: str = "api",
 ) -> None:
-    user.current_usage += prompt_tokens + completion_tokens
+    """크레딧을 청구하고 RequestLog를 남긴다. 스트림/비스트림 공통 과금 지점.
+
+    쿼터는 요청 전에 검사하고 후에 청구하므로 마지막 요청은 한도를 넘길 수 있다.
+    초과분은 청구하지 않고 잔량만 차감해 정확히 '소진 완료' 상태로 만든다.
+    부동소수 누적 오차로 한도에 미세하게 못 미쳐 429가 안 나가는 일이 없도록,
+    한도를 넘긴 경우에는 더하지 않고 usage_limit을 그대로 대입한다.
+    """
+    credits = charge_credits(prompt_tokens, cached_tokens, completion_tokens)
+    remaining = user.usage_limit - user.current_usage
+    if credits >= remaining:
+        credits = max(0.0, remaining)
+        user.current_usage = user.usage_limit
+    else:
+        user.current_usage += credits
     db.add(
         RequestLog(
             user_id=user.id,
             model=model,
             prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens,
             completion_tokens=completion_tokens,
+            credits_charged=credits,
             status_code=status_code,
             latency_ms=latency_ms,
             ttft_ms=ttft_ms,
@@ -188,7 +213,9 @@ async def _do_chat_non_stream(
     u = resp.get("usage") or {}
     pt = int(u.get("prompt_tokens") or 0) or count_messages(messages or body.get("messages", []))
     ct = int(u.get("completion_tokens") or 0)
-    _log_and_charge(db, user, model, pt, ct, 200, latency_ms, None, source)
+    # cached_tokens는 prompt_tokens의 부분집합이다 (더하지 말 것).
+    cached = cached_tokens_from_usage(u)
+    _log_and_charge(db, user, model, pt, cached, ct, 200, latency_ms, None, source)
 
     msg = (resp.get("choices") or [{}])[0].get("message") or {}
     write_conversation_log(
@@ -208,8 +235,8 @@ async def _do_chat_non_stream(
         ttft_ms=None,
         stream=False,
     )
-    out = {**headers, "X-RateLimit-Remaining-Tokens": str(max(0, user.usage_limit - user.current_usage))}
-    return JSONResponse(status_code=200, content=resp, headers=out)
+    # 방금 청구한 만큼을 반영한 잔량으로 갱신해서 돌려준다.
+    return JSONResponse(status_code=200, content=resp, headers=_quota_headers(user))
 
 
 async def _do_chat_stream(
@@ -225,7 +252,13 @@ async def _do_chat_stream(
     started = time.perf_counter()
     model = body.get("model", "")
     fallback_cid = f"chatcmpl-{uuid.uuid4().hex}"
-    state = {"ttft_ms": None, "prompt_tokens": 0, "completion_tokens": 0, "request_id": ""}
+    state = {
+        "ttft_ms": None,
+        "prompt_tokens": 0,
+        "cached_tokens": 0,
+        "completion_tokens": 0,
+        "request_id": "",
+    }
     response_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_call_acc: dict[int, dict] = {}
@@ -243,6 +276,7 @@ async def _do_chat_stream(
                         state["request_id"] = chunk.get("id") or ""
                     if usage := chunk.get("usage"):
                         state["prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+                        state["cached_tokens"] = cached_tokens_from_usage(usage)
                         state["completion_tokens"] = int(usage.get("completion_tokens") or 0)
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
@@ -257,7 +291,10 @@ async def _do_chat_stream(
             pass
         finally:
             try:
+                # usage 청크 전에 끊기면 tiktoken 근사로 폴백한다. 이 경로에서는
+                # 캐시 히트를 알 수 없어 cached=0이 되고, 그만큼 비싸게 청구된다.
                 pt = state["prompt_tokens"] or count_messages(messages)
+                cached = state["cached_tokens"]
                 ct = state["completion_tokens"]
                 total_latency_ms = int((time.perf_counter() - started) * 1000)
                 _log_and_charge(
@@ -265,6 +302,7 @@ async def _do_chat_stream(
                     user,
                     model,
                     pt,
+                    cached,
                     ct,
                     200,
                     total_latency_ms,

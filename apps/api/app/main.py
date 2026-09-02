@@ -40,7 +40,12 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-RateLimit-Limit-Tokens", "X-RateLimit-Remaining-Tokens"],
+    expose_headers=[
+        "X-RateLimit-Limit-Credits",
+        "X-RateLimit-Remaining-Credits",
+        "X-RateLimit-Limit-Tokens",
+        "X-RateLimit-Remaining-Tokens",
+    ],
 )
 
 

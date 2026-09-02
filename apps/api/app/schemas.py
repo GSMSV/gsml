@@ -17,8 +17,10 @@ class MeResponse(BaseModel):
     id: str
     email: str
     name: str
-    usage_limit: int
-    current_usage: int
+    # 단위는 크레딧(float). 토큰이 아니다.
+    usage_limit: float
+    current_usage: float
+    percent_used: float
     max_concurrent: int
 
 
@@ -35,12 +37,14 @@ class IssuedKeyResponse(BaseModel):
 
 
 class UsageTodayResponse(BaseModel):
-    used: int
-    limit: int
+    used: float
+    limit: float
+    percent_used: float
     reset_at: datetime
 
 
 class UsageHistoryItem(BaseModel):
     date: str
+    credits: float
     total_tokens: int
     request_count: int
