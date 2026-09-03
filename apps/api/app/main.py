@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from .config import settings
 from .db import init_db
 from .errors import OpenAIError, openai_error_response
-from .routers import auth, keys, me, openai_proxy, usage
+from .routers import admin, auth, keys, me, openai_proxy, usage
 from .scheduler import catch_up_resets, start_scheduler
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,12 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-RateLimit-Limit-Tokens", "X-RateLimit-Remaining-Tokens"],
+    expose_headers=[
+        "X-RateLimit-Limit-Credits",
+        "X-RateLimit-Remaining-Credits",
+        "X-RateLimit-Limit-Tokens",
+        "X-RateLimit-Remaining-Tokens",
+    ],
 )
 
 
@@ -75,4 +80,5 @@ app.include_router(auth.router)
 app.include_router(me.router)
 app.include_router(keys.router)
 app.include_router(usage.router)
+app.include_router(admin.router)
 app.include_router(openai_proxy.router)

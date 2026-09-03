@@ -26,6 +26,15 @@ def get_current_user(
     return user
 
 
+def get_admin_user(
+    user: User = Depends(get_current_user),
+) -> User:
+    """JWT 인증 + admin role 요구. `/api/admin/*` 전용."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
 def get_api_user(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),

@@ -142,3 +142,81 @@ code, .mono {
   margin: 8px 0 !important;
   border-radius: 8px !important;
 }
+
+input[type="text"], input[type="number"], input[type="search"] {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 12px;
+  border: 1px solid #d8dce0;
+  border-radius: 6px;
+  outline: none;
+  background: #fff;
+  color: #1a1d21;
+}
+input[type="text"]:focus, input[type="number"]:focus, input[type="search"]:focus {
+  border-color: #1a1d21;
+}
+label.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #4a5158;
+  margin-bottom: 14px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.stat-value {
+  font-size: 22px;
+  font-weight: 700;
+}
+.stat-label {
+  color: #6a7178;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+table.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table.admin-table th {
+  text-align: left;
+  color: #6a7178;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef0f3;
+  white-space: nowrap;
+}
+table.admin-table td {
+  padding: 10px;
+  border-bottom: 1px solid #f4f5f7;
+  white-space: nowrap;
+}
+table.admin-table tr:last-child td { border-bottom: none; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-admin { background: #fde8d8; color: #b14a00; }
+.badge-general { background: #eef0f3; color: #4a5158; }

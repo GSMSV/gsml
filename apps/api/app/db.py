@@ -18,13 +18,26 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
 
-    # 기존 DB에 source 컬럼이 없을 경우 자동으로 추가
+    # create_all은 없는 테이블만 만들 뿐 컬럼을 추가하지 않는다.
+    # 기존 data/gsml.db를 위해 누락 컬럼을 하나씩 시도하고, 이미 있으면 무시한다.
     with engine.connect() as conn:
-        try:
-            conn.execute(text("ALTER TABLE request_logs ADD COLUMN source VARCHAR"))
-            conn.commit()
-        except Exception:
-            pass  # 이미 존재하면 무시
+        for stmt in _ADD_COLUMN_STATEMENTS:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # 이미 존재하면 무시
+
+
+# 추가 순서는 무관하다. 각각 독립적으로 시도되고 실패(=이미 존재)는 무시된다.
+# 기존 유저의 usage_limit/current_usage를 토큰 단위 → 크레딧 단위로 바꾸는 작업은
+# 여기서 자동으로 하지 않는다. 배포자가 직접 UPDATE 쿼리를 수동으로 실행한다.
+_ADD_COLUMN_STATEMENTS = (
+    "ALTER TABLE request_logs ADD COLUMN source VARCHAR",
+    "ALTER TABLE request_logs ADD COLUMN cached_tokens INTEGER DEFAULT 0",
+    "ALTER TABLE request_logs ADD COLUMN credits_charged FLOAT DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN role VARCHAR DEFAULT 'general'",
+)
 
 
 def get_db():

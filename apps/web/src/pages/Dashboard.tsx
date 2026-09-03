@@ -1,16 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { api, Me } from "../api/client";
+import { Link, useNavigate } from "react-router-dom";
 import { authStore } from "../lib/auth";
+import { useMe } from "../hooks/useMe";
 import KeyCard from "../components/KeyCard";
 import UsageCard from "../components/UsageCard";
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { data: me } = useQuery<Me>({
-    queryKey: ["me"],
-    queryFn: async () => (await api.get("/api/me")).data,
-  });
+  const { data: me } = useMe();
 
   return (
     <div className="container">
@@ -20,6 +16,11 @@ export default function Dashboard() {
           {me && <p className="muted" style={{ margin: "4px 0 0" }}>{me.name} · {me.email}</p>}
         </div>
         <div className="row">
+          {me?.role === "admin" && (
+            <Link to="/admin">
+              <button className="secondary">관리자 페이지</button>
+            </Link>
+          )}
           <button className="secondary" onClick={() => { authStore.clear(); navigate("/", { replace: true }); }}>로그아웃</button>
         </div>
       </div>

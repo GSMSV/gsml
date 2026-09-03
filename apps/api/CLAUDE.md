@@ -14,6 +14,7 @@ Rules for the Python backend. Read together with `.claude/rules/auth.md` and
 | `app/schemas.py` | Pydantic request/response models |
 | `app/deps.py` | The three auth dependencies |
 | `app/errors.py` | OpenAI-format error factories |
+| `app/pricing.py` | Token usage → credits. The only place a rate is applied |
 | `app/routers/` | `auth`, `me`, `keys`, `usage` (dashboard) + `openai_proxy` (`/v1`) |
 | `app/upstream/` | `upstream.yml` parsing, `Balancer`, `InstanceNode`, llama native adapter |
 | `app/slot_manager.py` | **Deprecated.** Superseded by `upstream/instance_node.py`. Do not import or extend it |
@@ -35,8 +36,11 @@ Rules for the Python backend. Read together with `.claude/rules/auth.md` and
   `cd apps/api && python -c "import app.main"` plus a manual `uvicorn app.main:app --reload` run.
 - **There are no migrations.** `init_db()` calls `create_all()`, which only creates *missing tables* — it will
   not add a column to an existing table. Adding a column to `User`/`ApiKey`/`RequestLog` requires an explicit
-  `ALTER TABLE` in `init_db()` following the `request_logs.source` pattern (guarded by try/except), otherwise
-  existing `data/gsml.db` deployments break at query time.
+  `ALTER TABLE` in `init_db()` — add it to `_ADD_COLUMN_STATEMENTS`, which tries each one and ignores the
+  failure when the column already exists — otherwise existing `data/gsml.db` deployments break at query time.
+  A one-shot data fix (e.g. converting existing values to a new unit, as opposed to just adding a column) is
+  **not** automated here — it is run by hand as a one-off `UPDATE` against `data/gsml.db` at deploy time,
+  not from app code, so a restart can't reapply it.
 - **`db.commit()` is the caller's job.** Routers commit; helpers do not. After creating a row that the response
   needs, `db.refresh(record)`.
 - **`app/concurrency.py` is process-local.** It assumes one uvicorn worker on one event loop, so counters need

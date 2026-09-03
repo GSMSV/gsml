@@ -28,7 +28,9 @@ def expired_api_key() -> OpenAIError:
 
 
 def insufficient_quota() -> OpenAIError:
-    return OpenAIError(429, "Daily token quota exceeded.", "insufficient_quota", "insufficient_quota")
+    return OpenAIError(
+        429, "Daily credit quota exceeded.", "insufficient_quota", "insufficient_quota"
+    )
 
 
 def rate_limited() -> OpenAIError:
