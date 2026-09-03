@@ -27,10 +27,13 @@ api.interceptors.response.use(
   }
 );
 
+export type Role = "general" | "admin";
+
 export type Me = {
   id: string;
   email: string;
   name: string;
+  role: Role;
   // 단위는 크레딧(토큰 아님)
   usage_limit: number;
   current_usage: number;
@@ -61,4 +64,47 @@ export type UsageHistoryItem = {
   credits: number;
   total_tokens: number;
   request_count: number;
+};
+
+export type AdminUserItem = {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  // 단위는 크레딧(토큰 아님)
+  usage_limit: number;
+  current_usage: number;
+  percent_used: number;
+  max_concurrent: number;
+  api_key_prefix: string | null;
+  api_key_expires_at: string | null;
+  created_at: string;
+};
+
+export type AdminUserUpdate = {
+  usage_limit?: number;
+  current_usage?: number;
+  max_concurrent?: number;
+  role?: Role;
+};
+
+export type AdminTopUser = {
+  id: string;
+  name: string;
+  email: string;
+  current_usage: number;
+  usage_limit: number;
+  percent_used: number;
+};
+
+export type AdminStats = {
+  total_users: number;
+  admin_count: number;
+  active_users_today: number;
+  // 단위는 크레딧(토큰 아님)
+  total_credits_today: number;
+  total_requests_today: number;
+  total_tokens_today: number;
+  daily_history: UsageHistoryItem[];
+  top_users: AdminTopUser[];
 };

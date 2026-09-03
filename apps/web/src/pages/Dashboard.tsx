@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, Me } from "../api/client";
 import { authStore } from "../lib/auth";
 import KeyCard from "../components/KeyCard";
@@ -20,6 +20,11 @@ export default function Dashboard() {
           {me && <p className="muted" style={{ margin: "4px 0 0" }}>{me.name} · {me.email}</p>}
         </div>
         <div className="row">
+          {me?.role === "admin" && (
+            <Link to="/admin">
+              <button className="secondary">관리자 페이지</button>
+            </Link>
+          )}
           <button className="secondary" onClick={() => { authStore.clear(); navigate("/", { replace: true }); }}>로그아웃</button>
         </div>
       </div>
