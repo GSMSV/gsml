@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     DEFAULT_CREDIT_LIMIT: float = 1.0
     DEFAULT_MAX_CONCURRENT: int = 2
 
+    # 콤마로 구분된 이메일 목록. 로그인(신규/기존 공통) 시 여기 포함된 이메일은
+    # role이 admin으로 승격된다 — 최초 관리자를 SQL 없이 부트스트랩하기 위함.
+    # 이후 role 관리는 /api/admin/users에서 다른 관리자가 수행한다.
+    ADMIN_EMAILS: str = ""
+
     # 토큰 100만 개당 크레딧 단가.
     # cached_input은 업스트림 KV 캐시 히트분이라 기본 무료(0.0)다.
     PRICE_INPUT_PER_1M: float = 0.5
@@ -51,6 +56,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def admin_email_list(self) -> list[str]:
+        return [e.strip() for e in self.ADMIN_EMAILS.split(",") if e.strip()]
 
 
 settings = Settings()

@@ -43,6 +43,7 @@ _ADD_COLUMN_STATEMENTS = (
     # DEFAULT 0 → 기존 유저만 0으로 표시되어 아래 백필 대상이 된다.
     # 신규 유저는 모델 기본값(1)으로 삽입되므로 다시 환산되지 않는다.
     "ALTER TABLE users ADD COLUMN credit_migrated INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN role VARCHAR DEFAULT 'general'",
 )
 
 

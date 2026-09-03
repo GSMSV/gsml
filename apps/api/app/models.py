@@ -23,6 +23,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String)
     name: Mapped[str] = mapped_column(String)
 
+    # "general" | "admin" — app/deps.py의 get_admin_user가 검사한다.
+    role: Mapped[str] = mapped_column(String, default="general")
+
     # 단위는 크레딧(float). 토큰이 아니다 — app/pricing.py 참조.
     usage_limit: Mapped[float] = mapped_column(Float)
     current_usage: Mapped[float] = mapped_column(Float, default=0.0)

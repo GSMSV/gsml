@@ -56,8 +56,14 @@ async def oauth_callback(
             name=name,
             usage_limit=settings.DEFAULT_CREDIT_LIMIT,
             max_concurrent=settings.DEFAULT_MAX_CONCURRENT,
+            role="admin" if email in settings.admin_email_list else "general",
         )
         db.add(user)
+        db.commit()
+        db.refresh(user)
+    elif email in settings.admin_email_list and user.role != "admin":
+        # ADMIN_EMAILS는 role 부트스트랩용 — 매 로그인마다 재확인해 SQL 없이 승격시킨다.
+        user.role = "admin"
         db.commit()
         db.refresh(user)
 
