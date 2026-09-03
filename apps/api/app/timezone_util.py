@@ -24,3 +24,8 @@ def today_start_utc_naive() -> datetime:
     """
     start_local = datetime.combine(today_local(), datetime.min.time(), tzinfo=TZ)
     return start_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def to_local_date(utc_naive: datetime) -> date:
+    """naive UTC datetime(예: `RequestLog.created_at`)을 APP_TIMEZONE 기준 날짜로 변환한다."""
+    return utc_naive.replace(tzinfo=timezone.utc).astimezone(TZ).date()

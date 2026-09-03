@@ -15,7 +15,7 @@ from ..schemas import (
     AdminUserUpdate,
     UsageHistoryItem,
 )
-from ..timezone_util import today_start_utc_naive
+from ..timezone_util import today_start_utc_naive, to_local_date
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -71,6 +71,10 @@ def update_user(
     if payload.current_usage is not None:
         if payload.current_usage < 0:
             raise HTTPException(status_code=400, detail="current_usage must be >= 0")
+        if payload.current_usage > user.usage_limit:
+            raise HTTPException(
+                status_code=400, detail="current_usage must be <= usage_limit"
+            )
         user.current_usage = payload.current_usage
     if payload.max_concurrent is not None:
         if payload.max_concurrent < 1:
@@ -115,7 +119,7 @@ def stats(
         lambda: {"credits": 0.0, "tokens": 0, "count": 0}
     )
     for r in rows:
-        d = r.created_at.date().isoformat()
+        d = to_local_date(r.created_at).isoformat()
         bucket[d]["credits"] += r.credits_charged or 0.0
         bucket[d]["tokens"] += r.prompt_tokens + r.completion_tokens
         bucket[d]["count"] += 1
