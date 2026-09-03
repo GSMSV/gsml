@@ -31,9 +31,6 @@ class User(Base):
     current_usage: Mapped[float] = mapped_column(Float, default=0.0)
     max_concurrent: Mapped[int] = mapped_column(Integer)
 
-    # 토큰 한도 → 크레딧 한도 1회 환산이 끝났는지 표시 (db.init_db 참조)
-    credit_migrated: Mapped[int] = mapped_column(Integer, default=1)
-
     last_reset_date: Mapped[date] = mapped_column(Date, default=lambda: _utcnow().date())
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 

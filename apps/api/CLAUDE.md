@@ -38,8 +38,9 @@ Rules for the Python backend. Read together with `.claude/rules/auth.md` and
   not add a column to an existing table. Adding a column to `User`/`ApiKey`/`RequestLog` requires an explicit
   `ALTER TABLE` in `init_db()` — add it to `_ADD_COLUMN_STATEMENTS`, which tries each one and ignores the
   failure when the column already exists — otherwise existing `data/gsml.db` deployments break at query time.
-  A one-shot data fix (as opposed to a column add) needs its own marker column so a restart cannot apply it
-  twice; `users.credit_migrated` is the worked example.
+  A one-shot data fix (e.g. converting existing values to a new unit, as opposed to just adding a column) is
+  **not** automated here — it is run by hand as a one-off `UPDATE` against `data/gsml.db` at deploy time,
+  not from app code, so a restart can't reapply it.
 - **`db.commit()` is the caller's job.** Routers commit; helpers do not. After creating a row that the response
   needs, `db.refresh(record)`.
 - **`app/concurrency.py` is process-local.** It assumes one uvicorn worker on one event loop, so counters need
