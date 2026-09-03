@@ -1,16 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { api, Me } from "../api/client";
 import { authStore } from "../lib/auth";
+import { useMe } from "../hooks/useMe";
 import KeyCard from "../components/KeyCard";
 import UsageCard from "../components/UsageCard";
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { data: me } = useQuery<Me>({
-    queryKey: ["me"],
-    queryFn: async () => (await api.get("/api/me")).data,
-  });
+  const { data: me } = useMe();
 
   return (
     <div className="container">

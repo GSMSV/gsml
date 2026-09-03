@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { api, Me } from "./api/client";
 import { authStore } from "./lib/auth";
+import { useMe } from "./hooks/useMe";
 import Login from "./pages/Login";
 import Callback from "./pages/Callback";
 import Dashboard from "./pages/Dashboard";
@@ -12,10 +11,7 @@ function Protected({ children }: { children: JSX.Element }) {
 }
 
 function AdminOnly({ children }: { children: JSX.Element }) {
-  const { data: me, isLoading } = useQuery<Me>({
-    queryKey: ["me"],
-    queryFn: async () => (await api.get("/api/me")).data,
-  });
+  const { data: me, isLoading } = useMe();
   if (isLoading) return <div className="container">불러오는 중...</div>;
   if (!me || me.role !== "admin") return <Navigate to="/dashboard" replace />;
   return children;

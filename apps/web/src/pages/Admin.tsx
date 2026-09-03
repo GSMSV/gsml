@@ -1,14 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, Me } from "../api/client";
+import { useMe } from "../hooks/useMe";
 import AdminStats from "../components/AdminStats";
 import AdminUsersTable from "../components/AdminUsersTable";
 
 export default function Admin() {
-  const { data: me } = useQuery<Me>({
-    queryKey: ["me"],
-    queryFn: async () => (await api.get("/api/me")).data,
-  });
+  const { data: me } = useMe();
 
   return (
     <div className="container">
